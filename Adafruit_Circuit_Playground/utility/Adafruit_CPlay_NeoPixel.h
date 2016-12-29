@@ -16,8 +16,8 @@
   <http://www.gnu.org/licenses/>.
   --------------------------------------------------------------------*/
 
-#ifndef ADAFRUIT_NEOPIXEL_H
-#define ADAFRUIT_NEOPIXEL_H
+#ifndef ADAFRUIT_CPLAY_NEOPIXEL_H
+#define ADAFRUIT_CPLAY_NEOPIXEL_H
 
 #if (ARDUINO >= 100)
  #include <Arduino.h>
@@ -113,14 +113,14 @@ typedef uint16_t neoPixelType;
 typedef uint8_t  neoPixelType;
 #endif
 
-class Adafruit_NeoPixel {
+class Adafruit_CPlay_NeoPixel {
 
  public:
 
   // Constructor: number of LEDs, pin number, LED type
-  Adafruit_NeoPixel(uint16_t n, uint8_t p=6, neoPixelType t=NEO_GRB + NEO_KHZ800);
-  Adafruit_NeoPixel(void);
-  ~Adafruit_NeoPixel();
+  Adafruit_CPlay_NeoPixel(uint16_t n, uint8_t p=6, neoPixelType t=NEO_GRB + NEO_KHZ800);
+  Adafruit_CPlay_NeoPixel(void);
+  ~Adafruit_CPlay_NeoPixel();
 
   void
     begin(void),
@@ -136,8 +136,6 @@ class Adafruit_NeoPixel {
   uint8_t
    *getPixels(void) const,
     getBrightness(void) const;
-  int8_t
-    getPin(void) { return pin; };
   uint16_t
     numPixels(void) const;
   static uint32_t
@@ -178,4 +176,4 @@ class Adafruit_NeoPixel {
 
 };
 
-#endif // ADAFRUIT_NEOPIXEL_H
+#endif // ADAFRUIT_CPLAY_NEOPIXEL_H

@@ -2,7 +2,8 @@
   Arduino library to control a wide variety of WS2811- and WS2812-based RGB
   LED devices such as Adafruit FLORA RGB Smart Pixels and NeoPixel strips.
   Currently handles 400 and 800 KHz bitstreams on 8, 12 and 16 MHz ATmega
-  MCUs, with LEDs wired for various color orders.  Handles most output pins
+  MCUs, with LEDs wired for various color orders.  8 MHz MCUs provide
+  output on PORTB and PORTD, while 16 MHz chips can handle most output pins
   (possible exception with upper PORT registers on the Arduino Mega).
 
   Written by Phil Burgess / Paint Your Dragon for Adafruit Industries,
@@ -31,10 +32,10 @@
   <http://www.gnu.org/licenses/>.
   -------------------------------------------------------------------------*/
 
-#include "Adafruit_NeoPixel.h"
+#include "Adafruit_CPlay_NeoPixel.h"
 
 // Constructor when length, pin and type are known at compile-time:
-Adafruit_NeoPixel::Adafruit_NeoPixel(uint16_t n, uint8_t p, neoPixelType t) :
+Adafruit_CPlay_NeoPixel::Adafruit_CPlay_NeoPixel(uint16_t n, uint8_t p, neoPixelType t) :
   begun(false), brightness(0), pixels(NULL), endTime(0)
 {
   updateType(t);
@@ -47,7 +48,7 @@ Adafruit_NeoPixel::Adafruit_NeoPixel(uint16_t n, uint8_t p, neoPixelType t) :
 // read from internal flash memory or an SD card, or arrive via serial
 // command.  If using this constructor, MUST follow up with updateType(),
 // updateLength(), etc. to establish the strand type, length and pin number!
-Adafruit_NeoPixel::Adafruit_NeoPixel() :
+Adafruit_CPlay_NeoPixel::Adafruit_CPlay_NeoPixel() :
 #ifdef NEO_KHZ400
   is800KHz(true),
 #endif
@@ -56,12 +57,12 @@ Adafruit_NeoPixel::Adafruit_NeoPixel() :
 {
 }
 
-Adafruit_NeoPixel::~Adafruit_NeoPixel() {
+Adafruit_CPlay_NeoPixel::~Adafruit_CPlay_NeoPixel() {
   if(pixels)   free(pixels);
   if(pin >= 0) pinMode(pin, INPUT);
 }
 
-void Adafruit_NeoPixel::begin(void) {
+void Adafruit_CPlay_NeoPixel::begin(void) {
   if(pin >= 0) {
     pinMode(pin, OUTPUT);
     digitalWrite(pin, LOW);
@@ -69,7 +70,7 @@ void Adafruit_NeoPixel::begin(void) {
   begun = true;
 }
 
-void Adafruit_NeoPixel::updateLength(uint16_t n) {
+void Adafruit_CPlay_NeoPixel::updateLength(uint16_t n) {
   if(pixels) free(pixels); // Free existing data (if any)
 
   // Allocate new data -- note: ALL PIXELS ARE CLEARED
@@ -82,7 +83,7 @@ void Adafruit_NeoPixel::updateLength(uint16_t n) {
   }
 }
 
-void Adafruit_NeoPixel::updateType(neoPixelType t) {
+void Adafruit_CPlay_NeoPixel::updateType(neoPixelType t) {
   boolean oldThreeBytesPerPixel = (wOffset == rOffset); // false if RGBW
 
   wOffset = (t >> 6) & 0b11; // See notes in header file
@@ -107,7 +108,7 @@ extern "C" void ICACHE_RAM_ATTR espShow(
   uint8_t pin, uint8_t *pixels, uint32_t numBytes, uint8_t type);
 #endif // ESP8266
 
-void Adafruit_NeoPixel::show(void) {
+void Adafruit_CPlay_NeoPixel::show(void) {
 
   if(!pixels) return;
 
@@ -133,6 +134,7 @@ void Adafruit_NeoPixel::show(void) {
   // to the PORT register as needed.
 
   noInterrupts(); // Need 100% focus on instruction timing
+
 
 #ifdef __AVR__
 // AVR MCUs -- ATmega & ATtiny (no XMEGA) ---------------------------------
@@ -169,17 +171,22 @@ void Adafruit_NeoPixel::show(void) {
     volatile uint8_t n1, n2 = 0;  // First, next bits out
 
     // Squeezing an 800 KHz stream out of an 8 MHz chip requires code
-    // specific to each PORT register.
+    // specific to each PORT register.  At present this is only written
+    // to work with pins on PORTD or PORTB, the most likely use case --
+    // this covers all the pins on the Adafruit Flora and the bulk of
+    // digital pins on the Arduino Pro 8 MHz (keep in mind, this code
+    // doesn't even get compiled for 16 MHz boards like the Uno, Mega,
+    // Leonardo, etc., so don't bother extending this out of hand).
+    // Additional PORTs could be added if you really need them, just
+    // duplicate the else and loop and change the PORT.  Each add'l
+    // PORT will require about 150(ish) bytes of program space.
 
     // 10 instruction clocks per bit: HHxxxxxLLL
     // OUT instructions:              ^ ^    ^   (T=0,2,7)
 
-    // PORTD OUTPUT ----------------------------------------------------
+#ifdef PORTD // PORTD isn't present on ATtiny85, etc.
 
-#if defined(PORTD)
- #if defined(PORTB) || defined(PORTC) || defined(PORTF)
     if(port == &PORTD) {
- #endif // defined(PORTB/C/F)
 
       hi = PORTD |  pinMask;
       lo = PORTD & ~pinMask;
@@ -275,17 +282,9 @@ void Adafruit_NeoPixel::show(void) {
         [hi]     "r" (hi),
         [lo]     "r" (lo));
 
- #if defined(PORTB) || defined(PORTC) || defined(PORTF)
-    } else // other PORT(s)
- #endif // defined(PORTB/C/F)
-#endif // defined(PORTD)
+    } else if(port == &PORTB) {
 
-    // PORTB OUTPUT ----------------------------------------------------
-
-#if defined(PORTB)
- #if defined(PORTD) || defined(PORTC) || defined(PORTF)
-    if(port == &PORTB) {
- #endif // defined(PORTD/C/F)
+#endif // PORTD
 
       // Same as above, just switched to PORTB and stripped of comments.
       hi = PORTB |  pinMask;
@@ -363,191 +362,9 @@ void Adafruit_NeoPixel::show(void) {
       : [port] "I" (_SFR_IO_ADDR(PORTB)), [ptr] "e" (ptr), [hi] "r" (hi),
         [lo] "r" (lo));
 
- #if defined(PORTD) || defined(PORTC) || defined(PORTF)
-    }
- #endif
- #if defined(PORTC) || defined(PORTF)
-    else
- #endif // defined(PORTC/F)
-#endif // defined(PORTB)
-
-    // PORTC OUTPUT ----------------------------------------------------
-
-#if defined(PORTC)
- #if defined(PORTD) || defined(PORTB) || defined(PORTF)
-    if(port == &PORTC) {
- #endif // defined(PORTD/B/F)
-
-      // Same as above, just switched to PORTC and stripped of comments.
-      hi = PORTC |  pinMask;
-      lo = PORTC & ~pinMask;
-      n1 = lo;
-      if(b & 0x80) n1 = hi;
-
-      asm volatile(
-       "headC:"                   "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "mov  %[n2]   , %[lo]"    "\n\t"
-        "out  %[port] , %[n1]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "sbrc %[byte] , 6"        "\n\t"
-         "mov %[n2]   , %[hi]"    "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "mov  %[n1]   , %[lo]"    "\n\t"
-        "out  %[port] , %[n2]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "sbrc %[byte] , 5"        "\n\t"
-         "mov %[n1]   , %[hi]"    "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "mov  %[n2]   , %[lo]"    "\n\t"
-        "out  %[port] , %[n1]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "sbrc %[byte] , 4"        "\n\t"
-         "mov %[n2]   , %[hi]"    "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "mov  %[n1]   , %[lo]"    "\n\t"
-        "out  %[port] , %[n2]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "sbrc %[byte] , 3"        "\n\t"
-         "mov %[n1]   , %[hi]"    "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "mov  %[n2]   , %[lo]"    "\n\t"
-        "out  %[port] , %[n1]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "sbrc %[byte] , 2"        "\n\t"
-         "mov %[n2]   , %[hi]"    "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "mov  %[n1]   , %[lo]"    "\n\t"
-        "out  %[port] , %[n2]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "sbrc %[byte] , 1"        "\n\t"
-         "mov %[n1]   , %[hi]"    "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "mov  %[n2]   , %[lo]"    "\n\t"
-        "out  %[port] , %[n1]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "sbrc %[byte] , 0"        "\n\t"
-         "mov %[n2]   , %[hi]"    "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "sbiw %[count], 1"        "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "mov  %[n1]   , %[lo]"    "\n\t"
-        "out  %[port] , %[n2]"    "\n\t"
-        "ld   %[byte] , %a[ptr]+" "\n\t"
-        "sbrc %[byte] , 7"        "\n\t"
-         "mov %[n1]   , %[hi]"    "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "brne headC"              "\n"
-      : [byte] "+r" (b), [n1] "+r" (n1), [n2] "+r" (n2), [count] "+w" (i)
-      : [port] "I" (_SFR_IO_ADDR(PORTC)), [ptr] "e" (ptr), [hi] "r" (hi),
-        [lo] "r" (lo));
-
- #if defined(PORTD) || defined(PORTB) || defined(PORTF)
-    }
- #endif // defined(PORTD/B/F)
- #if defined(PORTF)
-    else
- #endif
-#endif // defined(PORTC)
-
-    // PORTF OUTPUT ----------------------------------------------------
-
-#if defined(PORTF)
- #if defined(PORTD) || defined(PORTB) || defined(PORTC)
-    if(port == &PORTF) {
- #endif // defined(PORTD/B/C)
-
-      hi = PORTF |  pinMask;
-      lo = PORTF & ~pinMask;
-      n1 = lo;
-      if(b & 0x80) n1 = hi;
-
-      asm volatile(
-       "headF:"                   "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "mov  %[n2]   , %[lo]"    "\n\t"
-        "out  %[port] , %[n1]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "sbrc %[byte] , 6"        "\n\t"
-         "mov %[n2]   , %[hi]"    "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "mov  %[n1]   , %[lo]"    "\n\t"
-        "out  %[port] , %[n2]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "sbrc %[byte] , 5"        "\n\t"
-         "mov %[n1]   , %[hi]"    "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "mov  %[n2]   , %[lo]"    "\n\t"
-        "out  %[port] , %[n1]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "sbrc %[byte] , 4"        "\n\t"
-         "mov %[n2]   , %[hi]"    "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "mov  %[n1]   , %[lo]"    "\n\t"
-        "out  %[port] , %[n2]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "sbrc %[byte] , 3"        "\n\t"
-         "mov %[n1]   , %[hi]"    "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "mov  %[n2]   , %[lo]"    "\n\t"
-        "out  %[port] , %[n1]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "sbrc %[byte] , 2"        "\n\t"
-         "mov %[n2]   , %[hi]"    "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "mov  %[n1]   , %[lo]"    "\n\t"
-        "out  %[port] , %[n2]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "sbrc %[byte] , 1"        "\n\t"
-         "mov %[n1]   , %[hi]"    "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "mov  %[n2]   , %[lo]"    "\n\t"
-        "out  %[port] , %[n1]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "sbrc %[byte] , 0"        "\n\t"
-         "mov %[n2]   , %[hi]"    "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "sbiw %[count], 1"        "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "mov  %[n1]   , %[lo]"    "\n\t"
-        "out  %[port] , %[n2]"    "\n\t"
-        "ld   %[byte] , %a[ptr]+" "\n\t"
-        "sbrc %[byte] , 7"        "\n\t"
-         "mov %[n1]   , %[hi]"    "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "brne headF"              "\n"
-      : [byte] "+r" (b), [n1] "+r" (n1), [n2] "+r" (n2), [count] "+w" (i)
-      : [port] "I" (_SFR_IO_ADDR(PORTF)), [ptr] "e" (ptr), [hi] "r" (hi),
-        [lo] "r" (lo));
-
- #if defined(PORTD) || defined(PORTB) || defined(PORTC)
-    }
- #endif // defined(PORTD/B/C)
-#endif // defined(PORTF)
+#ifdef PORTD
+    }    // endif PORTB
+#endif
 
 #ifdef NEO_KHZ400
   } else { // end 800 KHz, do 400 KHz
@@ -618,12 +435,9 @@ void Adafruit_NeoPixel::show(void) {
 
     volatile uint8_t next;
 
-    // PORTD OUTPUT ----------------------------------------------------
+#ifdef PORTD
 
-#if defined(PORTD)
- #if defined(PORTB) || defined(PORTC) || defined(PORTF)
     if(port == &PORTD) {
- #endif // defined(PORTB/C/F)
 
       hi   = PORTD |  pinMask;
       lo   = PORTD & ~pinMask;
@@ -679,17 +493,9 @@ void Adafruit_NeoPixel::show(void) {
           [hi]     "r" (hi),
           [lo]     "r" (lo));
 
- #if defined(PORTB) || defined(PORTC) || defined(PORTF)
-    } else // other PORT(s)
- #endif // defined(PORTB/C/F)
-#endif // defined(PORTD)
+    } else if(port == &PORTB) {
 
-    // PORTB OUTPUT ----------------------------------------------------
-
-#if defined(PORTB)
- #if defined(PORTD) || defined(PORTC) || defined(PORTF)
-    if(port == &PORTB) {
- #endif // defined(PORTD/C/F)
+#endif // PORTD
 
       hi   = PORTB |  pinMask;
       lo   = PORTB & ~pinMask;
@@ -739,136 +545,9 @@ void Adafruit_NeoPixel::show(void) {
         : [port] "I" (_SFR_IO_ADDR(PORTB)), [ptr] "e" (ptr), [hi] "r" (hi),
           [lo] "r" (lo));
 
- #if defined(PORTD) || defined(PORTC) || defined(PORTF)
+#ifdef PORTD
     }
- #endif
- #if defined(PORTC) || defined(PORTF)
-    else
- #endif // defined(PORTC/F)
-#endif // defined(PORTB)
-
-    // PORTC OUTPUT ----------------------------------------------------
-
-#if defined(PORTC)
- #if defined(PORTD) || defined(PORTB) || defined(PORTF)
-    if(port == &PORTC) {
- #endif // defined(PORTD/B/F)
-
-      hi   = PORTC |  pinMask;
-      lo   = PORTC & ~pinMask;
-      next = lo;
-      if(b & 0x80) next = hi;
-
-      // Same as above, just set for PORTC & stripped of comments
-      asm volatile(
-       "headC:"                   "\n\t"
-        "out   %[port], %[hi]"    "\n\t"
-        "rcall bitTimeC"          "\n\t"
-        "out   %[port], %[hi]"    "\n\t"
-        "rcall bitTimeC"          "\n\t"
-        "out   %[port], %[hi]"    "\n\t"
-        "rcall bitTimeC"          "\n\t"
-        "out   %[port], %[hi]"    "\n\t"
-        "rcall bitTimeC"          "\n\t"
-        "out   %[port], %[hi]"    "\n\t"
-        "rcall bitTimeC"          "\n\t"
-        "out   %[port], %[hi]"    "\n\t"
-        "rcall bitTimeC"          "\n\t"
-        "out   %[port], %[hi]"    "\n\t"
-        "rcall bitTimeC"          "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "ld   %[byte] , %a[ptr]+" "\n\t"
-        "out  %[port] , %[next]"  "\n\t"
-        "mov  %[next] , %[lo]"    "\n\t"
-        "sbrc %[byte] , 7"        "\n\t"
-         "mov %[next] , %[hi]"    "\n\t"
-        "nop"                     "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "sbiw %[count], 1"        "\n\t"
-        "brne headC"              "\n\t"
-         "rjmp doneC"             "\n\t"
-        "bitTimeC:"               "\n\t"
-         "out  %[port], %[next]"  "\n\t"
-         "mov  %[next], %[lo]"    "\n\t"
-         "rol  %[byte]"           "\n\t"
-         "sbrc %[byte], 7"        "\n\t"
-          "mov %[next], %[hi]"    "\n\t"
-         "nop"                    "\n\t"
-         "out  %[port], %[lo]"    "\n\t"
-         "ret"                    "\n\t"
-         "doneC:"                 "\n"
-        : [byte] "+r" (b), [next] "+r" (next), [count] "+w" (i)
-        : [port] "I" (_SFR_IO_ADDR(PORTC)), [ptr] "e" (ptr), [hi] "r" (hi),
-          [lo] "r" (lo));
-
- #if defined(PORTD) || defined(PORTB) || defined(PORTF)
-    }
- #endif // defined(PORTD/B/F)
- #if defined(PORTF)
-    else
- #endif
-#endif // defined(PORTC)
-
-    // PORTF OUTPUT ----------------------------------------------------
-
-#if defined(PORTF)
- #if defined(PORTD) || defined(PORTB) || defined(PORTC)
-    if(port == &PORTF) {
- #endif // defined(PORTD/B/C)
-
-      hi   = PORTF |  pinMask;
-      lo   = PORTF & ~pinMask;
-      next = lo;
-      if(b & 0x80) next = hi;
-
-      // Same as above, just set for PORTF & stripped of comments
-      asm volatile(
-       "headF:"                   "\n\t"
-        "out   %[port], %[hi]"    "\n\t"
-        "rcall bitTimeC"          "\n\t"
-        "out   %[port], %[hi]"    "\n\t"
-        "rcall bitTimeC"          "\n\t"
-        "out   %[port], %[hi]"    "\n\t"
-        "rcall bitTimeC"          "\n\t"
-        "out   %[port], %[hi]"    "\n\t"
-        "rcall bitTimeC"          "\n\t"
-        "out   %[port], %[hi]"    "\n\t"
-        "rcall bitTimeC"          "\n\t"
-        "out   %[port], %[hi]"    "\n\t"
-        "rcall bitTimeC"          "\n\t"
-        "out   %[port], %[hi]"    "\n\t"
-        "rcall bitTimeC"          "\n\t"
-        "out  %[port] , %[hi]"    "\n\t"
-        "rjmp .+0"                "\n\t"
-        "ld   %[byte] , %a[ptr]+" "\n\t"
-        "out  %[port] , %[next]"  "\n\t"
-        "mov  %[next] , %[lo]"    "\n\t"
-        "sbrc %[byte] , 7"        "\n\t"
-         "mov %[next] , %[hi]"    "\n\t"
-        "nop"                     "\n\t"
-        "out  %[port] , %[lo]"    "\n\t"
-        "sbiw %[count], 1"        "\n\t"
-        "brne headF"              "\n\t"
-         "rjmp doneC"             "\n\t"
-        "bitTimeC:"               "\n\t"
-         "out  %[port], %[next]"  "\n\t"
-         "mov  %[next], %[lo]"    "\n\t"
-         "rol  %[byte]"           "\n\t"
-         "sbrc %[byte], 7"        "\n\t"
-          "mov %[next], %[hi]"    "\n\t"
-         "nop"                    "\n\t"
-         "out  %[port], %[lo]"    "\n\t"
-         "ret"                    "\n\t"
-         "doneC:"                 "\n"
-        : [byte] "+r" (b), [next] "+r" (next), [count] "+w" (i)
-        : [port] "I" (_SFR_IO_ADDR(PORTF)), [ptr] "e" (ptr), [hi] "r" (hi),
-          [lo] "r" (lo));
-
- #if defined(PORTD) || defined(PORTB) || defined(PORTC)
-    }
- #endif // defined(PORTD/B/C)
-#endif // defined(PORTF)
+#endif
 
 #ifdef NEO_KHZ400
   } else { // 400 KHz
@@ -1524,7 +1203,7 @@ void Adafruit_NeoPixel::show(void) {
 }
 
 // Set the output pin number
-void Adafruit_NeoPixel::setPin(uint8_t p) {
+void Adafruit_CPlay_NeoPixel::setPin(uint8_t p) {
   if(begun && (pin >= 0)) pinMode(pin, INPUT);
     pin = p;
     if(begun) {
@@ -1538,7 +1217,7 @@ void Adafruit_NeoPixel::setPin(uint8_t p) {
 }
 
 // Set pixel color from separate R,G,B components:
-void Adafruit_NeoPixel::setPixelColor(
+void Adafruit_CPlay_NeoPixel::setPixelColor(
  uint16_t n, uint8_t r, uint8_t g, uint8_t b) {
 
   if(n < numLEDs) {
@@ -1560,7 +1239,7 @@ void Adafruit_NeoPixel::setPixelColor(
   }
 }
 
-void Adafruit_NeoPixel::setPixelColor(
+void Adafruit_CPlay_NeoPixel::setPixelColor(
  uint16_t n, uint8_t r, uint8_t g, uint8_t b, uint8_t w) {
 
   if(n < numLEDs) {
@@ -1584,7 +1263,7 @@ void Adafruit_NeoPixel::setPixelColor(
 }
 
 // Set pixel color from 'packed' 32-bit RGB color:
-void Adafruit_NeoPixel::setPixelColor(uint16_t n, uint32_t c) {
+void Adafruit_CPlay_NeoPixel::setPixelColor(uint16_t n, uint32_t c) {
   if(n < numLEDs) {
     uint8_t *p,
       r = (uint8_t)(c >> 16),
@@ -1610,18 +1289,18 @@ void Adafruit_NeoPixel::setPixelColor(uint16_t n, uint32_t c) {
 
 // Convert separate R,G,B into packed 32-bit RGB color.
 // Packed format is always RGB, regardless of LED strand color order.
-uint32_t Adafruit_NeoPixel::Color(uint8_t r, uint8_t g, uint8_t b) {
+uint32_t Adafruit_CPlay_NeoPixel::Color(uint8_t r, uint8_t g, uint8_t b) {
   return ((uint32_t)r << 16) | ((uint32_t)g <<  8) | b;
 }
 
 // Convert separate R,G,B,W into packed 32-bit WRGB color.
 // Packed format is always WRGB, regardless of LED strand color order.
-uint32_t Adafruit_NeoPixel::Color(uint8_t r, uint8_t g, uint8_t b, uint8_t w) {
+uint32_t Adafruit_CPlay_NeoPixel::Color(uint8_t r, uint8_t g, uint8_t b, uint8_t w) {
   return ((uint32_t)w << 24) | ((uint32_t)r << 16) | ((uint32_t)g <<  8) | b;
 }
 
 // Query color from previously-set pixel (returns packed 32-bit RGB value)
-uint32_t Adafruit_NeoPixel::getPixelColor(uint16_t n) const {
+uint32_t Adafruit_CPlay_NeoPixel::getPixelColor(uint16_t n) const {
   if(n >= numLEDs) return 0; // Out of bounds, return no color.
 
   uint8_t *p;
@@ -1662,11 +1341,11 @@ uint32_t Adafruit_NeoPixel::getPixelColor(uint16_t n) const {
 // Returns pointer to pixels[] array.  Pixel data is stored in device-
 // native format and is not translated here.  Application will need to be
 // aware of specific pixel data format and handle colors appropriately.
-uint8_t *Adafruit_NeoPixel::getPixels(void) const {
+uint8_t *Adafruit_CPlay_NeoPixel::getPixels(void) const {
   return pixels;
 }
 
-uint16_t Adafruit_NeoPixel::numPixels(void) const {
+uint16_t Adafruit_CPlay_NeoPixel::numPixels(void) const {
   return numLEDs;
 }
 
@@ -1682,7 +1361,7 @@ uint16_t Adafruit_NeoPixel::numPixels(void) const {
 // the limited number of steps (quantization) in the old data will be
 // quite visible in the re-scaled version.  For a non-destructive
 // change, you'll need to re-render the full strip data.  C'est la vie.
-void Adafruit_NeoPixel::setBrightness(uint8_t b) {
+void Adafruit_CPlay_NeoPixel::setBrightness(uint8_t b) {
   // Stored brightness value is different than what's passed.
   // This simplifies the actual scaling math later, allowing a fast
   // 8x8-bit multiply and taking the MSB.  'brightness' is a uint8_t,
@@ -1708,23 +1387,10 @@ void Adafruit_NeoPixel::setBrightness(uint8_t b) {
 }
 
 //Return the brightness value
-uint8_t Adafruit_NeoPixel::getBrightness(void) const {
+uint8_t Adafruit_CPlay_NeoPixel::getBrightness(void) const {
   return brightness - 1;
 }
 
-void Adafruit_NeoPixel::clear() {
+void Adafruit_CPlay_NeoPixel::clear() {
   memset(pixels, 0, numBytes);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
